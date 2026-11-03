@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+STAGING=/home/smkpesat/sekelik-deploy
+TARGET=/opt/sekelik-academy-bot
+BOT_USER=sekelikbot
+
+test -f "$STAGING/package.json"
+test -f "$TARGET/.env"
+
+/usr/bin/rsync -a --delete \
+  --exclude='.env' \
+  --exclude='data/' \
+  --exclude='node_modules/' \
+  "$STAGING/" "$TARGET/"
+
+/usr/bin/chown -R "$BOT_USER:$BOT_USER" "$TARGET"
+/usr/bin/su -s /bin/sh -c "cd '$TARGET' && /usr/bin/npm ci --omit=dev && /usr/bin/node src/register-commands.js" "$BOT_USER"
+/usr/bin/systemctl restart sekelik-bot
+/usr/bin/systemctl is-active --quiet sekelik-bot

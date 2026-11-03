@@ -148,6 +148,48 @@ journalctl -u sekelik-bot -f
 
 Jangan juga menjalankan `npm start` secara manual ketika unit systemd aktif. Untuk memperbarui: hentikan service, deploy dependensi, lalu `sudo systemctl restart sekelik-bot`.
 
+### CI/CD GitHub Actions ke VM Proxmox
+
+Workflow [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) menjalankan `npm test` pada pull request dan setiap push. Push ke branch `main` yang lulus pengujian akan menyalin source ke VM lewat SSH, mempertahankan `.env` dan `data/`, memasang dependency produksi, mendaftarkan command, lalu me-restart service.
+
+Persiapan satu kali di VM sebagai user administrator (contoh deployment user: `smkpesat`):
+
+```bash
+sudo install -d -m 700 -o smkpesat -g smkpesat /home/smkpesat/sekelik-deploy
+sudo install -m 750 -o root -g root \
+  /opt/sekelik-academy-bot/deploy/proxmox/deploy-sekelik-bot \
+  /usr/local/sbin/deploy-sekelik-bot
+sudo tee /etc/sudoers.d/sekelik-deploy > /dev/null <<'EOF'
+smkpesat ALL=(root) NOPASSWD: /usr/local/sbin/deploy-sekelik-bot
+EOF
+sudo chmod 440 /etc/sudoers.d/sekelik-deploy
+sudo visudo -cf /etc/sudoers.d/sekelik-deploy
+```
+
+Jika username SSH bukan `smkpesat`, ubah `STAGING` pada script `deploy/proxmox/deploy-sekelik-bot` dan baris sudoers agar sesuai sebelum memasangnya.
+
+Tambahkan GitHub Actions secrets berikut di **Repository Settings → Secrets and variables → Actions**:
+
+| Secret | Nilai |
+|---|---|
+| `DEPLOY_HOST` | IP atau hostname VM |
+| `DEPLOY_USER` | User SSH deployment, contoh `smkpesat` |
+| `DEPLOY_PORT` | Port SSH publik VM; kosongkan atau isi `22` bila memakai port standar |
+| `DEPLOY_SSH_KEY` | Private key SSH khusus deployment |
+| `DEPLOY_KNOWN_HOSTS` | Baris host key VM dari `ssh-keyscan -H IP_VM` yang diverifikasi |
+
+Buat pasangan key khusus deployment pada komputer tepercaya, lalu tambahkan public key ke `/home/smkpesat/.ssh/authorized_keys` di VM:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/sekelik_github_deploy -C "github-actions-sekelik"
+ssh-copy-id -i ~/.ssh/sekelik_github_deploy.pub smkpesat@IP_VM
+ssh-keyscan -H IP_VM
+```
+
+Simpan isi file private key `~/.ssh/sekelik_github_deploy` sebagai `DEPLOY_SSH_KEY`; simpan output `ssh-keyscan` yang sudah Anda verifikasi sebagai `DEPLOY_KNOWN_HOSTS`. Jangan menyimpan private key, token Discord, `.env`, atau `data/` di GitHub.
+
+GitHub-hosted Actions harus dapat mencapai port SSH VM dari internet. Jika VM berada di jaringan privat Proxmox, buat port forwarding pada router/firewall dari port publik ke port `22` VM, lalu isi port publik itu sebagai `DEPLOY_PORT`. Untuk port kustom, gunakan `ssh-copy-id -p PORT ...` dan `ssh-keyscan -p PORT -H IP_VM`.
+
 ## Pengujian lokal
 
 ```bash
