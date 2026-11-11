@@ -64,6 +64,19 @@ export function createDatabase(path) {
       created_at INTEGER NOT NULL,
       UNIQUE(guild_id, reporter_id, message_id)
     );
+    CREATE TABLE IF NOT EXISTS role_panels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      message_id TEXT,
+      mode TEXT NOT NULL CHECK(mode IN ('single', 'multi')),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      placeholder TEXT NOT NULL,
+      color INTEGER NOT NULL,
+      role_ids TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
   return db;
 }

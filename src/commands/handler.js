@@ -1,12 +1,20 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, ModalBuilder, PermissionFlagsBits, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
-import { DEFAULT_SETTINGS } from '../services/settings-service.js';
+import { buildWelcomeEmbed } from '../events/guild-member-add.js';
+import { RolePanelService } from '../services/role-panel-service.js';
+import { buildRulesEmbed, normalizeMultiline, parseHexColor, resolveRulesDraft } from '../services/rules-presets.js';
 
 const VERIFY_BUTTON_ID = 'sekelik:verify-member';
 const ROLE_PICKER_ID = 'sekelik:role-picker';
+const ROLE_PICKER_PREFIX = 'sekelik:role-picker:';
 const OPEN_TICKET_BUTTON_ID = 'sekelik:open-ticket';
 const CLOSE_TICKET_BUTTON_ID = 'sekelik:close-ticket';
 const REPORT_MODAL_PREFIX = 'sekelik:report-message:';
+const RULES_MODAL_PREFIX = 'sekelik:rules-publish:';
 const REPORT_REASON_INPUT_ID = 'reason';
+const RULES_TITLE_INPUT_ID = 'title';
+const RULES_BODY_INPUT_ID = 'body';
+const RULES_FOOTER_INPUT_ID = 'footer';
+const RULES_COLOR_INPUT_ID = 'color';
 
 function requirePermission(interaction, permission) {
   if (!interaction.memberPermissions?.has(permission)) throw new Error('Anda tidak memiliki izin Discord yang diperlukan untuk command ini.');
@@ -20,6 +28,13 @@ function validDomain(domain) {
 function textChannel(channel, name) {
   if (!channel?.isTextBased() || channel.type === ChannelType.GuildForum) throw new Error(`${name} harus berupa channel teks.`);
   return channel;
+}
+async function requireBotChannelPermissions(interaction, channel, name) {
+  const botMember = interaction.guild.members.me ?? await interaction.guild.members.fetchMe();
+  const permissions = channel.permissionsFor(botMember);
+  if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+    throw new Error(`Bot memerlukan izin View Channel, Send Messages, dan Embed Links di ${name}.`);
+  }
 }
 async function targetMember(interaction, user) {
   const member = await interaction.guild.members.fetch(user.id).catch(() => null);
@@ -42,31 +57,38 @@ export function chooseRolePickerChanges(configuredRoleIds, selectedRoleIds, memb
   };
 }
 
-export function createCommandHandler({ settings, db, tickets, reports }) {
+export function createCommandHandler({ settings, db, tickets, reports, rolePanels }) {
+  const panels = rolePanels ?? (db ? new RolePanelService(db) : null);
   return async (interaction) => {
     try {
       requireGuild(interaction);
       if (interaction.isMessageContextMenuCommand()) return await showReportModal(interaction, settings);
       if (interaction.isModalSubmit()) {
         if (interaction.customId.startsWith(REPORT_MODAL_PREFIX)) return await submitReport(interaction, settings, reports);
+        if (interaction.customId.startsWith(RULES_MODAL_PREFIX)) return await submitRulesModal(interaction, settings);
         return;
       }
       if (interaction.isButton()) {
-        if (interaction.customId === VERIFY_BUTTON_ID) return handleVerification(interaction, settings);
-        if (interaction.customId === OPEN_TICKET_BUTTON_ID) return handleTicketOpen(interaction, settings, tickets);
-        if (interaction.customId === CLOSE_TICKET_BUTTON_ID) return handleTicketClose(interaction, settings, tickets);
+        if (interaction.customId === VERIFY_BUTTON_ID) return await handleVerification(interaction, settings);
+        if (interaction.customId === OPEN_TICKET_BUTTON_ID) return await handleTicketOpen(interaction, settings, tickets);
+        if (interaction.customId === CLOSE_TICKET_BUTTON_ID) return await handleTicketClose(interaction, settings, tickets);
         return;
       }
       if (interaction.isStringSelectMenu()) {
-        if (interaction.customId === ROLE_PICKER_ID) return handleRolePicker(interaction, settings);
+        if (interaction.customId === ROLE_PICKER_ID || interaction.customId.startsWith(ROLE_PICKER_PREFIX)) {
+          return await handleRolePicker(interaction, settings, panels);
+        }
         return;
       }
       if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: 'Gunakan `/welcome setup` untuk sambutan. Mulai automod dengan dry-run aktif, lalu cek `/automod status`. Command moderasi memerlukan izin Discord yang sesuai.' });
+      if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: settings.has(interaction.guildId)
+        ? 'Konfigurasi server ini sudah tersimpan. Gunakan `/setup` atau `/welcome setup` untuk memperbarui, `/rules publish` untuk aturan, `/roles setup` untuk panel role, lalu cek `/automod status`.'
+        : 'Server ini belum dikonfigurasi. Administrator atau pengguna dengan izin Manage Server perlu menjalankan `/setup` terlebih dahulu.' });
+      if (interaction.commandName === 'setup') return await handleSetup(interaction, settings);
       if (interaction.commandName === 'welcome') return await handleWelcome(interaction, settings);
-      if (interaction.commandName === 'rules') return await handleRules(interaction);
+      if (interaction.commandName === 'rules') return await handleRules(interaction, settings);
       if (interaction.commandName === 'verify') return await handleVerifySetup(interaction, settings);
-      if (interaction.commandName === 'roles') return await handleRolePickerSetup(interaction, settings);
+      if (interaction.commandName === 'roles') return await handleRolePickerSetup(interaction, settings, panels);
       if (interaction.commandName === 'ticket') return await handleTicketSetup(interaction, settings);
       if (interaction.commandName === 'automod') return await handleAutomod(interaction, settings);
       if (interaction.commandName === 'warnings' || interaction.commandName === 'clearwarnings') {
@@ -95,15 +117,18 @@ export function createCommandHandler({ settings, db, tickets, reports }) {
         const deleted = await channel.bulkDelete(count, true);
         return interaction.reply({ ephemeral: true, content: `${deleted.size} pesan dihapus. Pesan berusia lebih dari 14 hari dilewati oleh API Discord.` });
       }
+      throw new Error('Command belum tersedia pada versi bot yang sedang berjalan. Deploy dan restart bot, lalu coba lagi.');
     } catch (error) {
       const payload = { ephemeral: true, content: `Tidak dapat menjalankan command: ${error.message}` };
-      if (interaction.replied || interaction.deferred) await interaction.followUp(payload); else await interaction.reply(payload);
+      if (interaction.deferred && !interaction.replied) await interaction.editReply({ content: payload.content });
+      else if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+      else await interaction.reply(payload);
     }
   };
 }
 
 async function showReportModal(interaction, settings) {
-  if (!settings.get(interaction.guildId).logChannelId) throw new Error('Channel log moderator belum diatur. Minta admin menjalankan `/welcome setup` dan mengisi channel log.');
+  if (!settings.get(interaction.guildId).logChannelId) throw new Error('Channel log moderator belum diatur. Minta admin menjalankan `/setup` dan mengisi channel log.');
   const modal = new ModalBuilder()
     .setCustomId(`${REPORT_MODAL_PREFIX}${interaction.targetMessage.id}`)
     .setTitle('Laporkan Pesan')
@@ -123,7 +148,7 @@ async function submitReport(interaction, settings, reports) {
   if (!/^\d{17,20}$/.test(messageId)) throw new Error('ID pesan laporan tidak valid.');
   const config = settings.get(interaction.guildId);
   const logChannel = await interaction.guild.channels.fetch(config.logChannelId).catch(() => null);
-  if (!logChannel?.isTextBased()) throw new Error('Channel log moderator tidak ditemukan. Minta admin memperbarui konfigurasi sambutan.');
+  if (!logChannel?.isTextBased()) throw new Error('Channel log moderator tidak ditemukan. Minta admin memperbarui konfigurasi server.');
   const message = await interaction.channel.messages.fetch(messageId).catch(() => null);
   if (!message) throw new Error('Pesan yang dilaporkan sudah tidak tersedia.');
   if (message.author.id === interaction.user.id) throw new Error('Anda tidak dapat melaporkan pesan sendiri.');
@@ -152,27 +177,44 @@ async function submitReport(interaction, settings, reports) {
   return interaction.reply({ ephemeral: true, content: 'Laporan Anda sudah dikirim ke moderator. Terima kasih.' });
 }
 
+function renderCustomText(raw, fallback, guildName, roleName = '') {
+  const source = raw?.trim() || fallback;
+  return normalizeMultiline(source)
+    .replaceAll('{server}', guildName)
+    .replaceAll('{role}', roleName);
+}
+
 async function handleVerifySetup(interaction, settings) {
   requirePermission(interaction, PermissionFlagsBits.ManageGuild);
   const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel verifikasi');
+  await requireBotChannelPermissions(interaction, channel, 'channel verifikasi');
   const role = interaction.options.getRole('role', true);
   if (!role.editable) throw new Error('Bot tidak dapat memberi role ini. Pindahkan role bot ke atas role target dan pastikan bot memiliki izin Manage Roles.');
-  settings.update(interaction.guildId, { verificationChannelId: channel.id, verificationRoleId: role.id });
+  const title = renderCustomText(interaction.options.getString('judul'), '✅ Verifikasi Anggota', interaction.guild.name, role.name).slice(0, 256);
+  const description = renderCustomText(
+    interaction.options.getString('deskripsi'),
+    'Selamat datang di **{server}**!\n\nSebelum mengakses channel lain, baca aturan server terlebih dahulu lalu tekan tombol di bawah untuk menyatakan persetujuan. Setelah terverifikasi, kamu akan menerima role **{role}**.',
+    interaction.guild.name,
+    role.name
+  ).slice(0, 4096);
+  const buttonLabel = (interaction.options.getString('tombol')?.trim() || 'Saya setuju dengan aturan').slice(0, 80);
+  const footerText = renderCustomText(interaction.options.getString('footer'), 'Satu klik untuk verifikasi dan bergabung.', interaction.guild.name, role.name).trim().slice(0, 2048);
+  const color = parseHexColor(interaction.options.getString('warna'));
+  await interaction.deferReply({ ephemeral: true });
+  const embed = new EmbedBuilder().setColor(color).setTitle(title).setDescription(description);
+  if (footerText) embed.setFooter({ text: footerText });
   await channel.send({
-    embeds: [new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle('✅ Verifikasi Anggota')
-      .setDescription(`Selamat datang di **${interaction.guild.name}**!\n\nSebelum mulai belajar, baca aturan komunitas lalu tekan tombol di bawah untuk menyatakan bahwa kamu setuju. Setelah diverifikasi, kamu akan mendapatkan role **${role.name}** dan dapat mengakses channel anggota.`)
-      .setFooter({ text: 'Satu klik untuk bergabung dan belajar bersama.' })],
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(VERIFY_BUTTON_ID).setLabel('Saya setuju dengan rules').setStyle(ButtonStyle.Success))]
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(VERIFY_BUTTON_ID).setLabel(buttonLabel).setStyle(ButtonStyle.Success))]
   });
-  return interaction.reply({ ephemeral: true, content: `Pesan verifikasi dikirim ke <#${channel.id}>. Role setelah verifikasi: ${role}.` });
+  settings.update(interaction.guildId, { verificationChannelId: channel.id, verificationRoleId: role.id });
+  return interaction.editReply({ content: `Pesan verifikasi dikirim ke <#${channel.id}>. Role setelah verifikasi: ${role}.` });
 }
 
 async function handleVerification(interaction, settings) {
   const config = settings.get(interaction.guildId);
   if (!config.verificationRoleId) throw new Error('Verifikasi belum dikonfigurasi. Minta admin menjalankan `/verify setup`.');
-  const role = interaction.guild.roles.cache.get(config.verificationRoleId);
+  const role = interaction.guild.roles.cache.get(config.verificationRoleId) ?? await interaction.guild.roles.fetch?.(config.verificationRoleId).catch(() => null);
   if (!role) throw new Error('Role verifikasi sudah tidak ditemukan. Minta admin menjalankan `/verify setup` kembali.');
   if (!role.editable) throw new Error('Bot tidak dapat memberi role verifikasi. Administrator perlu memperbaiki izin Manage Roles atau posisi role bot.');
   const member = await interaction.guild.members.fetch(interaction.user.id);
@@ -181,68 +223,135 @@ async function handleVerification(interaction, settings) {
   return interaction.reply({ ephemeral: true, content: `Verifikasi berhasil. Selamat datang, ${interaction.user}! Role ${role} telah diberikan.` });
 }
 
-async function handleRolePickerSetup(interaction, settings) {
+async function handleRolePickerSetup(interaction, settings, rolePanels) {
   requirePermission(interaction, PermissionFlagsBits.ManageGuild);
-  const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel role picker');
-  const roles = Array.from({ length: 6 }, (_, index) => interaction.options.getRole(`role-${index + 1}`)).filter(Boolean);
-  if (new Set(roles.map((role) => role.id)).size !== roles.length) throw new Error('Setiap role pada picker harus berbeda.');
+  const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel panel role');
+  await requireBotChannelPermissions(interaction, channel, 'channel panel role');
+  const roles = Array.from({ length: 10 }, (_, index) => interaction.options.getRole(`role-${index + 1}`)).filter(Boolean);
+  if (new Set(roles.map((role) => role.id)).size !== roles.length) throw new Error('Setiap role pada panel harus berbeda.');
   const unavailable = roles.find((role) => !role.editable);
   if (unavailable) throw new Error(`Bot tidak dapat mengelola role ${unavailable}. Pindahkan role bot ke atasnya dan pastikan bot memiliki izin Manage Roles.`);
-  settings.update(interaction.guildId, { rolePickerRoleIds: roles.map((role) => role.id) });
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId(ROLE_PICKER_ID)
-    .setPlaceholder('Pilih satu atau beberapa minat')
-    .setMinValues(0)
-    .setMaxValues(roles.length)
-    .addOptions(roles.map((role) => ({ label: role.name, value: role.id, description: `Tambahkan atau pertahankan role ${role.name}` })));
-  await channel.send({
-    embeds: [new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle('🎯 Pilih Role Minatmu')
-      .setDescription('Pilih semua bidang yang ingin kamu pelajari atau ikuti. Kamu dapat membuka menu ini lagi kapan saja untuk mengubah pilihan. Role yang tidak dipilih akan dilepas oleh bot.')],
-    components: [new ActionRowBuilder().addComponents(menu)]
+
+  const mode = interaction.options.getString('mode') || 'multi';
+  const color = parseHexColor(interaction.options.getString('warna'));
+  const title = renderCustomText(interaction.options.getString('judul'), '🎭 Ambil Role', interaction.guild.name).slice(0, 256);
+  const defaultDesc = mode === 'single'
+    ? 'Pilih **satu** role melalui menu di bawah. Memilih role baru akan menggantikan pilihan sebelumnya pada panel ini.'
+    : 'Pilih satu atau beberapa role melalui menu di bawah. Kamu dapat membuka menu ini lagi kapan saja untuk mengubah pilihan.';
+  const description = renderCustomText(interaction.options.getString('deskripsi'), defaultDesc, interaction.guild.name).slice(0, 4096);
+  const placeholder = (interaction.options.getString('placeholder')?.trim() || (mode === 'single' ? 'Pilih satu role' : 'Pilih satu atau beberapa role')).slice(0, 150);
+
+  await interaction.deferReply({ ephemeral: true });
+  const roleIds = roles.map((role) => role.id);
+  const panelId = rolePanels.create({
+    guildId: interaction.guildId,
+    channelId: channel.id,
+    mode,
+    title,
+    description,
+    placeholder,
+    color,
+    roleIds
   });
-  return interaction.reply({ ephemeral: true, content: `Role picker dikirim ke <#${channel.id}> untuk ${roles.length} role.` });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`${ROLE_PICKER_PREFIX}${panelId}`)
+    .setPlaceholder(placeholder)
+    .setMinValues(0)
+    .setMaxValues(mode === 'single' ? 1 : roles.length)
+    .addOptions(roles.map((role) => ({
+      label: role.name.slice(0, 100),
+      value: role.id,
+      description: `Ambil atau lepas role ${role.name}`.slice(0, 100)
+    })));
+
+  try {
+    const sent = await channel.send({
+      embeds: [new EmbedBuilder().setColor(color).setTitle(title).setDescription(description)],
+      components: [new ActionRowBuilder().addComponents(menu)]
+    });
+    rolePanels.setMessageId(panelId, sent.id);
+  } catch (error) {
+    rolePanels.delete(panelId);
+    throw error;
+  }
+
+  settings.update(interaction.guildId, { rolePickerRoleIds: roleIds });
+  return interaction.editReply({ content: `Panel role (${mode === 'single' ? 'satu pilihan' : 'multi-pilihan'}) dikirim ke <#${channel.id}> untuk ${roles.length} role.` });
 }
 
-async function handleRolePicker(interaction, settings) {
-  const configuredIds = settings.get(interaction.guildId).rolePickerRoleIds;
-  if (!configuredIds.length) throw new Error('Role picker belum dikonfigurasi. Minta admin menjalankan `/roles setup`.');
-  const roles = configuredIds.map((id) => interaction.guild.roles.cache.get(id)).filter(Boolean);
-  if (roles.length !== configuredIds.length) throw new Error('Satu atau beberapa role picker sudah tidak ditemukan. Minta admin menjalankan `/roles setup` kembali.');
+async function handleRolePicker(interaction, settings, rolePanels) {
+  let configuredIds;
+  let mode = 'multi';
+  if (interaction.customId.startsWith(ROLE_PICKER_PREFIX)) {
+    const panelId = Number(interaction.customId.slice(ROLE_PICKER_PREFIX.length));
+    const panel = Number.isInteger(panelId) && rolePanels ? rolePanels.findById(interaction.guildId, panelId) : null;
+    if (!panel) throw new Error('Panel role ini sudah tidak ditemukan. Minta admin membuat ulang dengan `/roles setup`.');
+    configuredIds = panel.roleIds;
+    mode = panel.mode;
+  } else {
+    configuredIds = settings.get(interaction.guildId).rolePickerRoleIds;
+  }
+  if (!configuredIds.length) throw new Error('Panel role belum dikonfigurasi. Minta admin menjalankan `/roles setup`.');
+  const resolvedRoles = await Promise.all(
+    configuredIds.map((id) => interaction.guild.roles.cache.get(id) ?? interaction.guild.roles.fetch?.(id).catch(() => null))
+  );
+  const roles = resolvedRoles.filter(Boolean);
+  if (roles.length !== configuredIds.length) throw new Error('Satu atau beberapa role pada panel ini sudah tidak ditemukan. Minta admin menjalankan `/roles setup` kembali.');
   const unavailable = roles.find((role) => !role.editable);
   if (unavailable) throw new Error(`Bot tidak dapat mengelola role ${unavailable}. Administrator perlu memperbaiki izin atau posisi role bot.`);
+  const selectedIds = mode === 'single' ? interaction.values.slice(0, 1) : interaction.values;
   const member = await interaction.guild.members.fetch(interaction.user.id);
-  const changes = chooseRolePickerChanges(configuredIds, interaction.values, member.roles.cache.keys());
-  const toAdd = changes.add.map((id) => interaction.guild.roles.cache.get(id));
-  const toRemove = changes.remove.map((id) => interaction.guild.roles.cache.get(id));
-  if (toAdd.length) await member.roles.add(toAdd, 'Anggota memperbarui pilihan role minat');
-  if (toRemove.length) await member.roles.remove(toRemove, 'Anggota memperbarui pilihan role minat');
-  const selectedRoles = roles.filter((role) => interaction.values.includes(role.id));
-  return interaction.reply({ ephemeral: true, content: selectedRoles.length ? `Role minat diperbarui: ${selectedRoles.join(', ')}.` : 'Semua role minat telah dilepas.' });
+  const roleById = new Map(roles.map((role) => [role.id, role]));
+  const changes = chooseRolePickerChanges(configuredIds, selectedIds, member.roles.cache.keys());
+  const toAdd = changes.add.map((id) => roleById.get(id));
+  const toRemove = changes.remove.map((id) => roleById.get(id));
+  if (toAdd.length) await member.roles.add(toAdd, 'Anggota memperbarui pilihan role');
+  if (toRemove.length) await member.roles.remove(toRemove, 'Anggota memperbarui pilihan role');
+  const selectedRoles = roles.filter((role) => selectedIds.includes(role.id));
+  return interaction.reply({
+    ephemeral: true,
+    content: selectedRoles.length ? `Role diperbarui: ${selectedRoles.join(', ')}.` : 'Semua role pada panel ini telah dilepas.'
+  });
 }
 
 async function handleTicketSetup(interaction, settings) {
   requirePermission(interaction, PermissionFlagsBits.ManageGuild);
   const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel panel tiket');
+  await requireBotChannelPermissions(interaction, channel, 'channel panel tiket');
   const role = interaction.options.getRole('role', true);
-  settings.update(interaction.guildId, { ticketPanelChannelId: channel.id, ticketSupportRoleId: role.id });
+  const title = renderCustomText(interaction.options.getString('judul'), '🆘 Butuh Bantuan?', interaction.guild.name, role.name).slice(0, 256);
+  const description = renderCustomText(
+    interaction.options.getString('deskripsi'),
+    'Tekan tombol di bawah untuk membuat channel bantuan privat. Jelaskan keperluan atau pertanyaanmu dengan jelas agar **{role}** dapat membantu lebih cepat.',
+    interaction.guild.name,
+    role.name
+  ).slice(0, 4096);
+  const buttonLabel = (interaction.options.getString('tombol')?.trim() || 'Buat Tiket Bantuan').slice(0, 80);
+  const welcomeMessage = interaction.options.getString('pesan-awal')?.trim() || null;
+  const color = parseHexColor(interaction.options.getString('warna'));
+  await interaction.deferReply({ ephemeral: true });
   await channel.send({
     embeds: [new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle('🆘 Butuh Bantuan?')
-      .setDescription('Tekan tombol di bawah untuk membuat channel bantuan privat. Jelaskan kendala, tujuan belajar, atau pertanyaanmu dengan jelas agar Mentor dapat membantu lebih cepat.')
-      .addFields({ name: 'Sebelum membuat tiket', value: 'Periksa channel aturan dan diskusi terlebih dahulu. Satu anggota hanya dapat memiliki satu tiket aktif.' })],
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(OPEN_TICKET_BUTTON_ID).setLabel('Buat Tiket Bantuan').setEmoji('🎫').setStyle(ButtonStyle.Primary))]
+      .setColor(color)
+      .setTitle(title)
+      .setDescription(description)
+      .addFields({ name: 'Sebelum membuat tiket', value: 'Periksa channel aturan dan informasi terlebih dahulu. Satu anggota hanya dapat memiliki satu tiket aktif.' })],
+    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(OPEN_TICKET_BUTTON_ID).setLabel(buttonLabel).setEmoji('🎫').setStyle(ButtonStyle.Primary))]
   });
-  return interaction.reply({ ephemeral: true, content: `Panel tiket dikirim ke <#${channel.id}>. Role pendamping: ${role}.` });
+  settings.update(interaction.guildId, {
+    ticketPanelChannelId: channel.id,
+    ticketSupportRoleId: role.id,
+    ticketConfig: { welcomeMessage, color }
+  });
+  return interaction.editReply({ content: `Panel tiket dikirim ke <#${channel.id}>. Role pendamping: ${role}.` });
 }
 
 async function handleTicketOpen(interaction, settings, tickets) {
   await interaction.deferReply({ ephemeral: true });
   const config = settings.get(interaction.guildId);
   if (!config.ticketSupportRoleId || !config.ticketPanelChannelId) throw new Error('Panel tiket belum dikonfigurasi. Minta admin menjalankan `/ticket setup`.');
-  const supportRole = interaction.guild.roles.cache.get(config.ticketSupportRoleId);
+  const supportRole = interaction.guild.roles.cache.get(config.ticketSupportRoleId) ?? await interaction.guild.roles.fetch?.(config.ticketSupportRoleId).catch(() => null);
   if (!supportRole) throw new Error('Role pendamping tiket sudah tidak ditemukan. Minta admin menjalankan `/ticket setup` kembali.');
   const existing = tickets.findOpenForUser(interaction.guildId, interaction.user.id);
   if (existing) {
@@ -268,9 +377,17 @@ async function handleTicketOpen(interaction, settings, tickets) {
     reason: `Tiket bantuan dibuat oleh ${interaction.user.tag}`
   });
   const ticketId = tickets.create({ guildId: interaction.guildId, channelId: ticketChannel.id, userId: interaction.user.id });
+  const ticketColor = config.ticketConfig?.color ?? 0x5865f2;
+  const introTemplate = config.ticketConfig?.welcomeMessage
+    || 'Terima kasih sudah menghubungi kami. Jelaskan kebutuhan atau kendalamu secara rinci agar **{role}** dapat membantu secepatnya.';
+  const introDescription = normalizeMultiline(introTemplate)
+    .replaceAll('{user}', `${interaction.user}`)
+    .replaceAll('{role}', supportRole.name)
+    .replaceAll('{server}', interaction.guild.name)
+    .slice(0, 4096);
   await ticketChannel.send({
     content: `${interaction.user} ${supportRole}`,
-    embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`🎫 Tiket Bantuan #${ticketId}`).setDescription('Terima kasih sudah menghubungi kami. Jelaskan kebutuhanmu secara rinci, termasuk konteks, pesan error, dan langkah yang sudah dicoba. Mentor akan membantu secepatnya.')],
+    embeds: [new EmbedBuilder().setColor(ticketColor).setTitle(`🎫 Tiket Bantuan #${ticketId}`).setDescription(introDescription)],
     components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(CLOSE_TICKET_BUTTON_ID).setLabel('Tutup Tiket').setEmoji('🔒').setStyle(ButtonStyle.Danger))],
     allowedMentions: { users: [interaction.user.id], roles: [supportRole.id], parse: [] }
   });
@@ -281,58 +398,163 @@ async function handleTicketClose(interaction, settings, tickets) {
   const ticket = tickets.findOpenForChannel(interaction.guildId, interaction.channelId);
   if (!ticket) throw new Error('Tombol ini hanya dapat dipakai pada tiket yang masih aktif.');
   const supportRoleId = settings.get(interaction.guildId).ticketSupportRoleId;
+  const supportRole = supportRoleId ? (interaction.guild.roles.cache.get(supportRoleId) ?? await interaction.guild.roles.fetch?.(supportRoleId).catch(() => null)) : null;
+  const supportLabel = supportRole?.name || 'tim pendamping';
   const member = await interaction.guild.members.fetch(interaction.user.id);
-  const isSupport = member.roles.cache.has(supportRoleId) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels);
-  if (interaction.user.id !== ticket.user_id && !isSupport) throw new Error('Hanya pembuat tiket, Mentor, atau pengelola channel yang dapat menutup tiket.');
+  const isSupport = (supportRoleId && member.roles.cache.has(supportRoleId)) || interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels);
+  if (interaction.user.id !== ticket.user_id && !isSupport) {
+    throw new Error(`Hanya pembuat tiket, ${supportLabel}, atau pengelola channel yang dapat menutup tiket.`);
+  }
   await interaction.deferReply({ ephemeral: true });
   await interaction.channel.permissionOverwrites.edit(ticket.user_id, { SendMessages: false }, { reason: `Tiket ditutup oleh ${interaction.user.tag}` });
   await interaction.channel.setName(`closed-${interaction.channel.name.replace(/^ticket-/, '').slice(0, 90)}`, `Tiket ditutup oleh ${interaction.user.tag}`);
   tickets.close(interaction.channelId, interaction.user.id);
-  await interaction.channel.send({ content: `🔒 Tiket ditutup oleh ${interaction.user}. Riwayat channel tetap tersedia untuk Mentor.`, allowedMentions: { users: [interaction.user.id], parse: [] } });
+  await interaction.channel.send({ content: `🔒 Tiket ditutup oleh ${interaction.user}. Riwayat channel tetap tersedia untuk ${supportLabel}.`, allowedMentions: { users: [interaction.user.id], parse: [] } });
   return interaction.editReply('Tiket ditutup. Anda tidak dapat mengirim pesan lagi di channel ini.');
 }
 
-async function handleRules(interaction) {
+async function handleRules(interaction, settings) {
   requirePermission(interaction, PermissionFlagsBits.ManageGuild);
   const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel aturan');
-  const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
-    .setTitle(`📜 Aturan ${interaction.guild.name}`)
-    .setDescription('Selamat datang di komunitas belajar kita! Ruang ini dibuat agar semua orang dapat belajar, bertanya, dan berkembang bersama dengan nyaman. Dengan tetap berada di server ini, kamu setuju untuk menaati aturan berikut.')
-    .addFields(
-      { name: '1. Saling menghormati', value: 'Gunakan bahasa yang sopan. Dilarang melakukan pelecehan, diskriminasi, intimidasi, provokasi, atau menyerang pribadi anggota lain.' },
-      { name: '2. Jaga topik channel', value: 'Kirim pesan sesuai fungsi channel. Gunakan channel perkenalan untuk menyapa, channel diskusi untuk belajar, dan hindari percakapan yang mengganggu pembahasan.' },
-      { name: '3. Jangan spam', value: 'Jangan mengirim pesan berulang, flood, mention berlebihan, promosi tanpa izin, atau undangan server lain. Bagikan link materi belajar hanya jika relevan.' },
-      { name: '4. Hargai karya dan privasi', value: 'Cantumkan sumber saat membagikan karya atau materi. Jangan menyebarkan data pribadi, token, password, atau isi percakapan privat tanpa izin.' },
-      { name: '5. Bertanya dan berdiskusi dengan baik', value: 'Jelaskan konteks saat bertanya, tunjukkan usaha yang sudah dilakukan, dan bantu anggota lain dengan jawaban yang membangun.' },
-      { name: '6. Ikuti arahan moderator', value: 'Moderator dapat menghapus pesan atau mengambil tindakan untuk menjaga komunitas. Jika ada masalah, hubungi moderator secara privat, bukan memperdebatkannya di channel umum.' }
-    )
-    .setFooter({ text: 'Mari belajar, berkarya, dan bertumbuh bersama.' })
-    .setTimestamp();
-  await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
-  return interaction.reply({ ephemeral: true, content: `Embed aturan telah dikirim ke <#${channel.id}>.` });
+  await requireBotChannelPermissions(interaction, channel, 'channel aturan');
+  const preset = interaction.options.getString('preset');
+  const editOption = interaction.options.getBoolean('edit');
+  const shouldEdit = editOption ?? !preset;
+  const draft = resolveRulesDraft({ preset, savedRules: settings.get(interaction.guildId).rulesConfig });
+  if (shouldEdit) {
+    const titleInput = new TextInputBuilder()
+      .setCustomId(RULES_TITLE_INPUT_ID)
+      .setLabel('Judul embed ({server} = nama server)')
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(256)
+      .setRequired(true);
+    if (draft.title) titleInput.setValue(draft.title.slice(0, 256));
+
+    const bodyInput = new TextInputBuilder()
+      .setCustomId(RULES_BODY_INPUT_ID)
+      .setLabel('Isi aturan (mendukung markdown Discord)')
+      .setStyle(TextInputStyle.Paragraph)
+      .setMaxLength(3900)
+      .setRequired(true);
+    if (draft.body) bodyInput.setValue(draft.body.slice(0, 3900));
+
+    const footerInput = new TextInputBuilder()
+      .setCustomId(RULES_FOOTER_INPUT_ID)
+      .setLabel('Footer opsional ({server} = nama server)')
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(200)
+      .setRequired(false);
+    if (draft.footer) footerInput.setValue(draft.footer.slice(0, 200));
+
+    const colorInput = new TextInputBuilder()
+      .setCustomId(RULES_COLOR_INPUT_ID)
+      .setLabel('Warna hex opsional (contoh #5865f2)')
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(7)
+      .setRequired(false);
+    if (draft.color) colorInput.setValue(draft.color.slice(0, 7));
+
+    const modal = new ModalBuilder()
+      .setCustomId(`${RULES_MODAL_PREFIX}${channel.id}`)
+      .setTitle('Atur & Kirim Rules Server')
+      .addComponents(
+        new ActionRowBuilder().addComponents(titleInput),
+        new ActionRowBuilder().addComponents(bodyInput),
+        new ActionRowBuilder().addComponents(footerInput),
+        new ActionRowBuilder().addComponents(colorInput)
+      );
+    return interaction.showModal(modal);
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const rulesConfig = { title: draft.title, body: draft.body, footer: draft.footer || '', color: draft.color || '#5865f2' };
+  await channel.send({ embeds: [buildRulesEmbed({ guildName: interaction.guild.name, rules: rulesConfig })], allowedMentions: { parse: [] } });
+  settings.update(interaction.guildId, { rulesConfig });
+  return interaction.editReply({ content: `Embed aturan dikirim ke <#${channel.id}> dan disimpan untuk server ini.` });
+}
+
+async function submitRulesModal(interaction, settings) {
+  requirePermission(interaction, PermissionFlagsBits.ManageGuild);
+  const channelId = interaction.customId.slice(RULES_MODAL_PREFIX.length);
+  if (!/^\d{17,20}$/.test(channelId)) throw new Error('ID channel aturan tidak valid.');
+  const channel = textChannel(await interaction.guild.channels.fetch(channelId).catch(() => null), 'Channel aturan');
+  await requireBotChannelPermissions(interaction, channel, 'channel aturan');
+  const title = interaction.fields.getTextInputValue(RULES_TITLE_INPUT_ID).trim();
+  const body = interaction.fields.getTextInputValue(RULES_BODY_INPUT_ID).trim();
+  if (!title || !body) throw new Error('Judul dan isi aturan tidak boleh kosong.');
+  const footer = interaction.fields.getTextInputValue(RULES_FOOTER_INPUT_ID).trim();
+  const colorRaw = interaction.fields.getTextInputValue(RULES_COLOR_INPUT_ID).trim();
+  parseHexColor(colorRaw);
+  await interaction.deferReply({ ephemeral: true });
+  const rulesConfig = { title, body, footer, color: colorRaw || '#5865f2' };
+  await channel.send({ embeds: [buildRulesEmbed({ guildName: interaction.guild.name, rules: rulesConfig })], allowedMentions: { parse: [] } });
+  settings.update(interaction.guildId, { rulesConfig });
+  return interaction.editReply({ content: `Aturan server disimpan dan dikirim ke <#${channel.id}>.` });
 }
 
 async function handleWelcome(interaction, settings) {
   requirePermission(interaction, PermissionFlagsBits.ManageGuild);
   const sub = interaction.options.getSubcommand();
   if (sub === 'setup') {
-    const welcome = textChannel(interaction.options.getChannel('welcome', true), 'Channel sambutan');
-    const rules = textChannel(interaction.options.getChannel('rules', true), 'Channel aturan');
-    const introduction = textChannel(interaction.options.getChannel('perkenalan', true), 'Channel perkenalan');
-    const log = interaction.options.getChannel('log');
-    if (log) textChannel(log, 'Channel log');
-    const role = interaction.options.getRole('role');
-    const template = interaction.options.getString('template');
-    if (template && (!template.includes('{user}') || !template.includes('{server}'))) throw new Error('Template harus memuat placeholder {user} dan {server}.');
-    settings.update(interaction.guildId, { welcomeChannelId: welcome.id, rulesChannelId: rules.id, introductionChannelId: introduction.id, logChannelId: log?.id ?? null, autoRoleId: role?.id ?? null, ...(template && { welcomeTemplate: template }) });
-    return interaction.reply({ ephemeral: true, content: 'Konfigurasi sambutan disimpan.' });
+    return handleSetup(interaction, settings);
   }
   const config = settings.get(interaction.guildId);
-  if (!config.welcomeChannelId) throw new Error('Jalankan `/welcome setup` terlebih dahulu.');
-  const channel = await interaction.guild.channels.fetch(config.welcomeChannelId);
-  await channel.send({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`Selamat datang di ${interaction.guild.name}!`).setDescription(config.welcomeTemplate.replaceAll('{user}', `<@${interaction.user.id}>`).replaceAll('{server}', interaction.guild.name)).setThumbnail(interaction.user.displayAvatarURL())], allowedMentions: { users: [interaction.user.id], roles: [], parse: [] } });
+  if (!config.welcomeChannelId) throw new Error('Jalankan `/setup` atau `/welcome setup` terlebih dahulu.');
+  const channel = await interaction.guild.channels.fetch(config.welcomeChannelId).catch(() => null);
+  if (!channel?.isTextBased()) throw new Error('Channel sambutan sudah dihapus atau tidak dapat diakses. Jalankan `/setup` kembali.');
+  await requireBotChannelPermissions(interaction, channel, 'channel sambutan');
+  const links = [
+    config.rulesChannelId && `Baca aturan di <#${config.rulesChannelId}>.`,
+    config.introductionChannelId && `Berkenalan di <#${config.introductionChannelId}>.`
+  ].filter(Boolean).join('\n');
+  await channel.send({
+    embeds: [buildWelcomeEmbed({
+      guildName: interaction.guild.name,
+      userId: interaction.user.id,
+      username: interaction.user.username ?? interaction.user.tag,
+      avatarUrl: interaction.user.displayAvatarURL(),
+      welcomeTitle: config.welcomeTitle,
+      welcomeTemplate: config.welcomeTemplate,
+      links
+    })],
+    allowedMentions: { users: [interaction.user.id], roles: [], parse: [] }
+  });
   return interaction.reply({ ephemeral: true, content: 'Pesan uji dikirim.' });
+}
+
+async function handleSetup(interaction, settings) {
+  requirePermission(interaction, PermissionFlagsBits.ManageGuild);
+  await interaction.deferReply({ ephemeral: true });
+  const welcome = textChannel(interaction.options.getChannel('welcome', true), 'Channel sambutan');
+  const rules = interaction.options.getChannel('rules');
+  if (rules) textChannel(rules, 'Channel aturan');
+  const introduction = interaction.options.getChannel('perkenalan');
+  if (introduction) textChannel(introduction, 'Channel perkenalan');
+  const log = interaction.options.getChannel('log');
+  if (log) textChannel(log, 'Channel log');
+  const channelsToCheck = [
+    [welcome, 'channel sambutan'],
+    ...(rules ? [[rules, 'channel aturan']] : []),
+    ...(introduction ? [[introduction, 'channel perkenalan']] : []),
+    ...(log ? [[log, 'channel log']] : [])
+  ];
+  for (const [channel, name] of channelsToCheck) {
+    await requireBotChannelPermissions(interaction, channel, name);
+  }
+  const role = interaction.options.getRole('role');
+  if (role && !role.editable) throw new Error('Bot tidak dapat memberi role otomatis ini. Pastikan bot memiliki Manage Roles dan role bot berada di atas role target.');
+  const template = interaction.options.getString('template');
+  if (template && (!template.includes('{user}') || !template.includes('{server}'))) throw new Error('Template harus memuat placeholder {user} dan {server}.');
+  const welcomeTitle = interaction.options.getString('judul');
+  settings.update(interaction.guildId, {
+    welcomeChannelId: welcome.id,
+    rulesChannelId: rules?.id ?? null,
+    introductionChannelId: introduction?.id ?? null,
+    logChannelId: log?.id ?? null,
+    autoRoleId: role?.id ?? null,
+    ...(template && { welcomeTemplate: template }),
+    ...(welcomeTitle && { welcomeTitle })
+  });
+  return interaction.editReply({ content: `Konfigurasi server **${interaction.guild.name}** disimpan terpisah untuk server ini.` });
 }
 
 async function handleAutomod(interaction, settings) {

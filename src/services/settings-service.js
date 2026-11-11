@@ -2,14 +2,17 @@ export const DEFAULT_SETTINGS = Object.freeze({
   welcomeChannelId: null,
   rulesChannelId: null,
   introductionChannelId: null,
-  welcomeTemplate: 'Halo {user}, selamat datang di {server}! 🎉 Silakan baca aturan komunitas dan perkenalkan dirimu. Selamat belajar dan berkarya bersama!',
+  welcomeTitle: 'Selamat datang di {server}!',
+  welcomeTemplate: 'Halo {user}, selamat datang di {server}! 🎉 Silakan baca aturan server terlebih dahulu dan nikmati waktumu di sini.',
   autoRoleId: null,
   logChannelId: null,
   verificationChannelId: null,
   verificationRoleId: null,
   rolePickerRoleIds: [],
+  rulesConfig: null,
   ticketPanelChannelId: null,
   ticketSupportRoleId: null,
+  ticketConfig: null,
   automodEnabled: true,
   mode: 'progressive',
   dryRun: true,
@@ -22,6 +25,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
 
 export class SettingsService {
   constructor(db) { this.db = db; }
+  has(guildId) {
+    return Boolean(this.db.prepare('SELECT 1 FROM guild_settings WHERE guild_id = ?').get(guildId));
+  }
   get(guildId) {
     const row = this.db.prepare('SELECT data FROM guild_settings WHERE guild_id = ?').get(guildId);
     return { ...DEFAULT_SETTINGS, ...(row ? JSON.parse(row.data) : {}) };

@@ -49,8 +49,8 @@ Isi `.env` secara lokal:
 ```dotenv
 DISCORD_TOKEN=token_bot_anda
 DISCORD_CLIENT_ID=id_aplikasi_anda
-# Isi saat pengembangan agar command langsung tersedia di satu server percobaan.
-DISCORD_GUILD_ID=id_server_percobaan_anda
+# Opsional: server pertama/legacy untuk membersihkan pendaftaran command guild lama.
+DISCORD_GUILD_ID=id_server_legacy_anda
 DATABASE_PATH=./data/sekelik-academy.sqlite
 ```
 
@@ -65,16 +65,18 @@ npm start
 npm run dev
 ```
 
-Jika `DISCORD_GUILD_ID` terisi, command didaftarkan ke server tersebut dan biasanya muncul cepat. Jika kosong, command global didaftarkan dan dapat membutuhkan waktu propagasi Discord. Jalankan **satu instance** bot untuk satu token/database; dua instance akan memproses event yang sama dan dapat menghasilkan tindakan ganda.
+Command selalu didaftarkan secara global ke aplikasi pada `DISCORD_CLIENT_ID`, sehingga satu bot dan satu proses dapat dipakai di beberapa server. `DISCORD_GUILD_ID` tidak lagi menjadi target pendaftaran; jika terisi, nilainya hanya dipakai untuk membaca dan membersihkan command guild lama **setelah** daftar global berhasil didaftarkan dan diverifikasi lewat API Discord. Command global dapat membutuhkan waktu untuk muncul di semua server. Jalankan **satu instance** bot untuk satu token/database; dua instance akan memproses event yang sama dan dapat menghasilkan tindakan ganda.
+
+Menjalankan ulang bot tidak mendaftarkan slash command. Setiap perubahan definisi command harus diikuti `npm run register`, baru kemudian restart proses bot.
 
 ## 5. Konfigurasi awal yang aman
 
-1. Buat channel `#welcome`, `#rules`, `#perkenalan`, dan privat `#moderation-log`.
-2. Jalankan `/rules publish` dan pilih `#rules` untuk mengirim embed aturan komunitas bawaan.
-3. Buat role `Murid`, lalu jalankan `/verify setup`; pilih channel verifikasi dan role tersebut. Anggota yang menekan tombol persetujuan akan menerima role `Murid`.
-4. Buat role minat `Web Development`, `Mobile Development`, `UI/UX`, `Data/AI`, `Cyber Security`, dan `Job Seeker`. Jalankan `/roles setup`, pilih channel tujuan, lalu isi masing-masing role. Anggota dapat memilih beberapa minat dan mengubahnya kapan saja dari menu.
-5. Buat role `Mentor`, lalu jalankan `/ticket setup`; pilih `#ticket-bantuan` dan role `Mentor`. Tombol panel membuat channel privat untuk pembuat tiket dan Mentor. Tiket dapat ditutup tanpa menghapus riwayat channel.
-6. Jalankan `/welcome setup` lalu pilih ketiga channel dan channel log moderator; role otomatis dan template bersifat opsional. Template kustom wajib memuat `{user}` dan `{server}`.
+1. Buat channel sambutan, aturan, dan privat `#moderation-log` (channel perkenalan bersifat opsional).
+2. Jalankan `/rules publish` dan pilih `#rules` untuk menulis/mengedit aturan server lewat pop-up modal (atau pilih `preset` siap pakai seperti `Umum / Netral`, `Komunitas Belajar`, atau `Server Roleplay`).
+3. Buat role verifikasi (misalnya `Murid` atau `Warga`), lalu jalankan `/verify setup`; pilih channel verifikasi, role target, serta opsional judul/deskripsi/label tombol/warna. Anggota yang menekan tombol akan menerima role tersebut.
+4. Buat role pilihan (misalnya role minat belajar atau fraksi/notifikasi roleplay). Jalankan `/roles setup`, pilih channel tujuan, mode (`multi-pilihan` atau `satu pilihan`), judul/deskripsi opsional, dan isi hingga 10 role. Anda dapat menjalankan `/roles setup` beberapa kali untuk membuat panel role yang berbeda dalam satu server.
+5. Buat role pendamping (misalnya `Mentor` atau `Admin RP`), lalu jalankan `/ticket setup`; pilih `#ticket-bantuan`, role pendamping, dan kustomisasi teks/warna bila perlu. Tombol panel membuat channel privat untuk pembuat tiket dan role pendamping. Tiket dapat ditutup tanpa menghapus riwayat channel.
+6. Jalankan `/setup` (atau alias lama `/welcome setup`) lalu pilih channel sambutan (wajib), serta opsional channel aturan, perkenalan, log moderator, auto-role, judul embed, dan template sambutan. Template kustom wajib memuat `{user}` dan `{server}`. Konfigurasi disimpan menggunakan ID server tempat command dijalankan.
 7. Anggota dapat klik kanan pesan → **Apps** → **Laporkan Pesan**, memasukkan alasan, dan bot mengirim laporan tanpa mention ke channel log moderator.
 8. Pastikan `/automod status` menampilkan `Dry-run: aktif`. Uji dahulu, lalu nonaktifkan simulasi hanya jika hasilnya benar: `/automod dry-run aktif:false`.
 9. Gunakan `/automod domain` untuk menambah domain terblokir (contoh `malware.example`), bukan kata kunci URL. Subdomain domain tersebut juga cocok; `bukanmalware.example` tidak cocok. Aktifkan pemeriksaan undangan dengan `/automod invite aktif:true` bila diperlukan.
@@ -87,17 +89,17 @@ Jika `DISCORD_GUILD_ID` terisi, command didaftarkan ke server tersebut dan biasa
 | Command | Fungsi |
 |---|---|
 | `/help` | Panduan singkat |
-| `/welcome setup`, `/welcome test` | Konfigurasi dan uji sambutan |
-| `/rules publish` | Mengirim embed aturan komunitas ke channel pilihan |
-| `/verify setup` | Mengirim tombol persetujuan rules dan memberi role verifikasi |
-| `/roles setup` | Mengirim menu multi-pilihan role minat |
-| `/ticket setup` | Mengirim tombol tiket bantuan privat untuk anggota dan Mentor |
+| `/setup`, `/welcome setup`, `/welcome test` | Konfigurasi server dan uji sambutan |
+| `/rules publish` | Mengedit/mengirim embed aturan server lewat modal atau preset |
+| `/verify setup` | Mengirim tombol verifikasi dan memberi role verifikasi (bisa dikustomisasi) |
+| `/roles setup` | Mengirim panel ambil role (multi-pilihan atau satu pilihan, bisa banyak panel) |
+| `/ticket setup` | Mengirim tombol tiket bantuan privat untuk anggota dan role pendamping |
 | Klik kanan pesan → Apps → `Laporkan Pesan` | Mengirim laporan pesan beserta alasan ke moderator |
 | `/automod status`, `toggle`, `mode`, `dry-run`, `threshold`, `whitelist`, `domain` | Konfigurasi automod |
 | `/warnings`, `/clearwarnings` | Tinjau/hapus pelanggaran aktif |
 | `/timeout`, `/ban`, `/unban`, `/purge` | Moderasi manual |
 
-`welcome`, `automod`, `rules`, `verify`, `roles`, dan `ticket` memerlukan **Manage Server**; warnings/timeout memerlukan **Moderate Members**; ban/unban memerlukan **Ban Members**; purge memerlukan **Manage Messages**. Izin ini diperiksa ulang saat command dijalankan. Untuk `/verify setup` dan `/roles setup`, bot membutuhkan **Manage Roles** dan role bot harus berada di atas role target. Untuk tiket, bot membutuhkan **Manage Channels** agar dapat membuat channel privat dan menutupnya. Timeout/ban juga memeriksa hierarki pelaksana dan kelayakan role bot. `/purge` dibatasi 1–100 pesan, dan Discord tidak menghapus massal pesan berusia lebih dari 14 hari.
+`setup`, `welcome`, `automod`, `rules`, `verify`, `roles`, dan `ticket` memerlukan **Manage Server** (Administrator juga memenuhi izin ini); warnings/timeout memerlukan **Moderate Members**; ban/unban memerlukan **Ban Members**; purge memerlukan **Manage Messages**. Semua command dibatasi ke konteks server dan izin diperiksa ulang saat dijalankan. Untuk `/verify setup` dan `/roles setup`, bot membutuhkan **Manage Roles** dan role bot harus berada di atas role target. Untuk tiket, bot membutuhkan **Manage Channels** agar dapat membuat channel privat dan menutupnya. Timeout/ban juga memeriksa hierarki pelaksana dan kelayakan role bot. `/purge` dibatasi 1–100 pesan, dan Discord tidak menghapus massal pesan berusia lebih dari 14 hari.
 
 ## Skenario uji server percobaan
 
@@ -116,6 +118,18 @@ Versi awal sengaja mengabaikan pesan bot lain dan webhook. Domain hanya diblokir
 
 Migrasi tabel dibuat otomatis pada startup di `DATABASE_PATH`. Seluruh query memakai parameter SQLite. Database mencatat ID insiden, pengguna/channel/waktu, aturan, cuplikan maksimal 300 karakter, jumlah aktif, pelaksana (`automod`/moderator), tindakan dicoba, serta status aktual berhasil/gagal/simulasi. Token tidak pernah dicatat.
 
+Konfigurasi berada di tabel `guild_settings` dengan `guild_id` sebagai primary key; whitelist, insiden, tindakan moderasi, tiket, dan laporan juga menyimpan `guild_id`. Karena skema sebelumnya pada proyek ini sudah menggunakan kunci tersebut, konfigurasi server pertama tidak perlu dipindahkan dan tetap dipakai apa adanya. Server baru memperoleh barisnya sendiri ketika `/setup` dijalankan. Server tanpa konfigurasi tidak menjalankan sambutan atau automod dan `/help` akan mengarahkan administrator ke `/setup`.
+
+### Migrasi command guild ke global dan uji dua server
+
+1. Cadangkan file pada `DATABASE_PATH`, lalu deploy kode tanpa menghapus `.env` atau direktori `data/`.
+2. Pertahankan `DISCORD_CLIENT_ID`, `DISCORD_TOKEN`, dan `DISCORD_GUILD_ID` lama. Jalankan `npm run register`; script memverifikasi command global, kemudian membersihkan command guild lama agar tidak muncul ganda.
+3. Restart satu instance bot. Tunggu propagasi command global bila Discord belum langsung menampilkannya.
+4. Di server pertama, jalankan `/welcome test` untuk memastikan konfigurasi lama masih menunjuk channel yang benar. Jalankan `/setup` hanya jika ingin memperbaruinya.
+5. Di server kedua, jalankan `/setup` dengan channel dan role milik server kedua, lalu `/welcome test`.
+6. Ubah konfigurasi salah satu server dan ulangi `/welcome test` di keduanya. Channel sambutan, log, role, whitelist, dan automod harus tetap berbeda.
+7. Gunakan dua akun uji untuk memicu `GuildMemberAdd` pada masing-masing server dan pastikan sambutan masuk ke channel server terkait. Uji juga kondisi channel/role dihapus dan izin bot dicabut; bot harus memberi pesan atau log yang jelas tanpa berhenti.
+
 Untuk menjalankan 24 jam di VPS, gunakan systemd (satu proses):
 
 ```ini
@@ -126,7 +140,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=sekelik
+User=sekelikbot
 WorkingDirectory=/opt/sekelik-academy-bot
 EnvironmentFile=/opt/sekelik-academy-bot/.env
 ExecStart=/usr/bin/npm start
@@ -137,7 +151,14 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-Salin proyek ke `/opt/sekelik-academy-bot`, pastikan `.env` dimiliki user `sekelik` dan hanya dapat dibaca user tersebut (`chmod 600 .env`), lalu jalankan:
+Salin proyek ke `/opt/sekelik-academy-bot`, pastikan seluruh aplikasi dimiliki user `sekelikbot`, lalu batasi `.env` agar hanya dapat dibaca user tersebut:
+
+```bash
+sudo chown -R sekelikbot:sekelikbot /opt/sekelik-academy-bot
+sudo chmod 600 /opt/sekelik-academy-bot/.env
+```
+
+Kemudian jalankan:
 
 ```bash
 sudo systemctl daemon-reload
@@ -146,11 +167,22 @@ sudo systemctl status sekelik-bot
 journalctl -u sekelik-bot -f
 ```
 
-Jangan juga menjalankan `npm start` secara manual ketika unit systemd aktif. Untuk memperbarui: hentikan service, deploy dependensi, lalu `sudo systemctl restart sekelik-bot`.
+Jangan menjalankan `npm start`, `npm ci`, atau `npm run register` sebagai user deployment `smkpesat` di `/opt/sekelik-academy-bot`. Direktori produksi dimiliki `sekelikbot`, sedangkan environment dari `EnvironmentFile` systemd tidak diwariskan ke shell interaktif.
+
+Untuk deploy manual, jalankan dependency dan registrasi sebagai service user dari working directory aplikasi agar `dotenv` dapat membaca `.env`:
+
+```bash
+sudo -u sekelikbot -H sh -c 'cd /opt/sekelik-academy-bot && npm ci --omit=dev && npm run register'
+sudo systemctl restart sekelik-bot
+sudo systemctl status sekelik-bot --no-pager
+sudo journalctl -u sekelik-bot -n 100 --no-pager
+```
+
+Untuk deploy melalui staging/CI, gunakan `sudo /usr/local/sbin/deploy-sekelik-bot`; script tersebut sudah mengatur ownership, menjalankan npm sebagai `sekelikbot`, mendaftarkan command, dan me-restart service.
 
 ### CI/CD GitHub Actions ke VM Proxmox
 
-Workflow [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) menjalankan `npm test` pada pull request dan setiap push. Push ke branch `main` yang lulus pengujian akan menyalin source ke VM lewat SSH, mempertahankan `.env` dan `data/`, memasang dependency produksi, mendaftarkan command, lalu me-restart service.
+Workflow [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml) menjalankan `npm test` pada pull request dan setiap push. Push ke branch `master` yang lulus pengujian akan menyalin source ke VM lewat SSH, mempertahankan `.env` dan `data/`, memasang dependency produksi, mendaftarkan command, lalu me-restart service.
 
 Persiapan satu kali di VM sebagai user administrator (contoh deployment user: `smkpesat`):
 

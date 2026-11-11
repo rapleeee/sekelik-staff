@@ -22,6 +22,7 @@ export class ModerationService {
   }
   async inspect(message) {
     if (!message.guild || message.author.bot || message.webhookId) return;
+    if (!this.settings.has(message.guild.id)) return;
     const settings = this.settings.get(message.guild.id);
     if (!settings.automodEnabled || this.isExempt(message)) return;
     const detection = this.detector.evaluate({
@@ -63,9 +64,15 @@ export class ModerationService {
     catch (error) { return { status: 'gagal', detail: `${outcomes.join('; ')}; ban gagal: ${error.code || error.message}` }; }
   }
   async log(guild, settings, data) {
-    if (!settings.logChannelId) return;
+    if (!settings.logChannelId) {
+      console.warn(`Log automod #${data.id} tidak dikirim di ${guild.name}: channel log belum dikonfigurasi. Jalankan /setup.`);
+      return;
+    }
     const channel = await guild.channels.fetch(settings.logChannelId).catch(() => null);
-    if (!channel?.isTextBased()) return;
+    if (!channel?.isTextBased()) {
+      console.warn(`Log automod #${data.id} tidak dikirim di ${guild.name}: channel log sudah tidak ditemukan atau bukan channel teks. Jalankan /setup kembali.`);
+      return;
+    }
     await channel.send({
       embeds: [{ color: data.result.status === 'berhasil' ? 0x2ecc71 : 0xe67e22, title: `Automod #${data.id}`, fields: [
         { name: 'Pengguna', value: `${data.user.tag} (${data.user.id})` },

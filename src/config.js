@@ -18,6 +18,8 @@ export function getRegistrationConfig() {
   return {
     token: required('DISCORD_TOKEN'),
     clientId: required('DISCORD_CLIENT_ID'),
-    guildId: process.env.DISCORD_GUILD_ID?.trim()
+    // Dipertahankan hanya untuk membersihkan command guild lama setelah
+    // pendaftaran global berhasil. Nilai ini tidak menentukan target deploy.
+    legacyGuildId: process.env.DISCORD_GUILD_ID?.trim()
   };
 }
