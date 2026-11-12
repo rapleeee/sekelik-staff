@@ -52,6 +52,10 @@ DISCORD_CLIENT_ID=id_aplikasi_anda
 # Opsional: server pertama/legacy untuk membersihkan pendaftaran command guild lama.
 DISCORD_GUILD_ID=id_server_legacy_anda
 DATABASE_PATH=./data/sekelik-academy.sqlite
+# Opsional: token GitHub (read-only Contents) untuk memantau repo private lewat /changelog.
+GITHUB_TOKEN=
+# Opsional: interval cek commit GitHub dalam detik (minimal 30, default 120).
+GITHUB_POLL_INTERVAL_SECONDS=120
 ```
 
 `data/` dan `.env` sudah diabaikan Git. Startup akan menolak berjalan bila token atau client ID kosong dengan pesan yang jelas.
@@ -94,12 +98,13 @@ Menjalankan ulang bot tidak mendaftarkan slash command. Setiap perubahan definis
 | `/verify setup` | Mengirim tombol verifikasi dan memberi role verifikasi (bisa dikustomisasi) |
 | `/roles setup` | Mengirim panel ambil role (multi-pilihan atau satu pilihan, bisa banyak panel) |
 | `/ticket setup` | Mengirim tombol tiket bantuan privat untuk anggota dan role pendamping |
+| `/changelog add`, `list`, `check`, `test`, `toggle`, `remove` | Pengumuman update otomatis dari commit repository GitHub |
 | Klik kanan pesan → Apps → `Laporkan Pesan` | Mengirim laporan pesan beserta alasan ke moderator |
 | `/automod status`, `toggle`, `mode`, `dry-run`, `threshold`, `whitelist`, `domain` | Konfigurasi automod |
 | `/warnings`, `/clearwarnings` | Tinjau/hapus pelanggaran aktif |
 | `/timeout`, `/ban`, `/unban`, `/purge` | Moderasi manual |
 
-`setup`, `welcome`, `automod`, `rules`, `verify`, `roles`, dan `ticket` memerlukan **Manage Server** (Administrator juga memenuhi izin ini); warnings/timeout memerlukan **Moderate Members**; ban/unban memerlukan **Ban Members**; purge memerlukan **Manage Messages**. Semua command dibatasi ke konteks server dan izin diperiksa ulang saat dijalankan. Untuk `/verify setup` dan `/roles setup`, bot membutuhkan **Manage Roles** dan role bot harus berada di atas role target. Untuk tiket, bot membutuhkan **Manage Channels** agar dapat membuat channel privat dan menutupnya. Timeout/ban juga memeriksa hierarki pelaksana dan kelayakan role bot. `/purge` dibatasi 1–100 pesan, dan Discord tidak menghapus massal pesan berusia lebih dari 14 hari.
+`setup`, `welcome`, `automod`, `rules`, `verify`, `roles`, `ticket`, dan `changelog` memerlukan **Manage Server** (Administrator juga memenuhi izin ini); warnings/timeout memerlukan **Moderate Members**; ban/unban memerlukan **Ban Members**; purge memerlukan **Manage Messages**. Semua command dibatasi ke konteks server dan izin diperiksa ulang saat dijalankan. Untuk `/verify setup` dan `/roles setup`, bot membutuhkan **Manage Roles** dan role bot harus berada di atas role target. Untuk tiket, bot membutuhkan **Manage Channels** agar dapat membuat channel privat dan menutupnya. Timeout/ban juga memeriksa hierarki pelaksana dan kelayakan role bot. `/purge` dibatasi 1–100 pesan, dan Discord tidak menghapus massal pesan berusia lebih dari 14 hari.
 
 ## Skenario uji server percobaan
 

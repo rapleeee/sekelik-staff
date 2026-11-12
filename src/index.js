@@ -9,6 +9,7 @@ import { SpamDetector } from './services/spam-detector.js';
 import { TicketService } from './services/ticket-service.js';
 import { ReportService } from './services/report-service.js';
 import { RolePanelService } from './services/role-panel-service.js';
+import { GitHubChangelogService } from './services/github-changelog-service.js';
 
 const config = getRuntimeConfig();
 const db = createDatabase(config.databasePath);
@@ -16,24 +17,30 @@ const settings = new SettingsService(db);
 const tickets = new TicketService(db);
 const reports = new ReportService(db);
 const rolePanels = new RolePanelService(db);
+const changelog = new GitHubChangelogService({ db, githubToken: config.githubToken });
 const moderation = new ModerationService({ db, settings, detector: new SpamDetector() });
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   partials: [Partials.Channel, Partials.Message]
 });
 
-client.once(Events.ClientReady, (ready) => console.log(`Bot siap sebagai ${ready.user.tag}.`));
+let changelogPoller = null;
+client.once(Events.ClientReady, (ready) => {
+  console.log(`Bot siap sebagai ${ready.user.tag}.`);
+  changelogPoller = changelog.startPolling(client, config.githubPollIntervalMs);
+});
 client.on(Events.GuildMemberAdd, createGuildMemberAddHandler(settings));
 client.on(Events.MessageCreate, (message) => moderation.inspect(message).catch((error) => console.error('Kesalahan automod pesan baru:', error)));
 client.on(Events.MessageUpdate, async (_, message) => {
   const full = message.partial ? await message.fetch().catch(() => null) : message;
   if (full) await moderation.inspect(full).catch((error) => console.error('Kesalahan automod pesan edit:', error));
 });
-client.on(Events.InteractionCreate, createCommandHandler({ settings, db, tickets, reports, rolePanels }));
+client.on(Events.InteractionCreate, createCommandHandler({ settings, db, tickets, reports, rolePanels, changelog }));
 client.on(Events.Error, (error) => console.error('Discord client error:', error));
 
 function shutdown(signal) {
   console.log(`Menerima ${signal}; menutup koneksi bot dan database.`);
+  changelogPoller?.stop();
   client.destroy(); db.close(); process.exit(0);
 }
 process.once('SIGINT', () => shutdown('SIGINT'));

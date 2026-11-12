@@ -77,6 +77,25 @@ export function createDatabase(path) {
       role_ids TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS github_trackers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      title TEXT,
+      mention_role_id TEXT,
+      color INTEGER NOT NULL DEFAULT 5793266,
+      include_links INTEGER NOT NULL DEFAULT 0,
+      ignore_merge INTEGER NOT NULL DEFAULT 1,
+      last_commit_sha TEXT,
+      etag TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_checked_at INTEGER,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE(guild_id, repo, branch)
+    );
   `);
   return db;
 }

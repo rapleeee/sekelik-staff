@@ -7,10 +7,14 @@ function required(name) {
 }
 
 export function getRuntimeConfig() {
+  const pollSeconds = Number.parseInt(process.env.GITHUB_POLL_INTERVAL_SECONDS?.trim() || '120', 10);
+  const githubPollIntervalMs = Number.isFinite(pollSeconds) && pollSeconds >= 30 ? pollSeconds * 1_000 : 120_000;
   return {
     token: required('DISCORD_TOKEN'),
     clientId: required('DISCORD_CLIENT_ID'),
-    databasePath: process.env.DATABASE_PATH?.trim() || './data/sekelik-academy.sqlite'
+    databasePath: process.env.DATABASE_PATH?.trim() || './data/sekelik-academy.sqlite',
+    githubToken: process.env.GITHUB_TOKEN?.trim() || null,
+    githubPollIntervalMs
   };
 }
 

@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, ModalBuilder, PermissionFlagsBits, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle } from 'discord.js';
 import { buildWelcomeEmbed } from '../events/guild-member-add.js';
+import { GitHubChangelogService } from '../services/github-changelog-service.js';
 import { RolePanelService } from '../services/role-panel-service.js';
 import { buildRulesEmbed, normalizeMultiline, parseHexColor, resolveRulesDraft } from '../services/rules-presets.js';
 
@@ -57,8 +58,9 @@ export function chooseRolePickerChanges(configuredRoleIds, selectedRoleIds, memb
   };
 }
 
-export function createCommandHandler({ settings, db, tickets, reports, rolePanels }) {
+export function createCommandHandler({ settings, db, tickets, reports, rolePanels, changelog }) {
   const panels = rolePanels ?? (db ? new RolePanelService(db) : null);
+  const githubChangelog = changelog ?? (db ? new GitHubChangelogService({ db }) : null);
   return async (interaction) => {
     try {
       requireGuild(interaction);
@@ -82,7 +84,7 @@ export function createCommandHandler({ settings, db, tickets, reports, rolePanel
       }
       if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === 'help') return interaction.reply({ ephemeral: true, content: settings.has(interaction.guildId)
-        ? 'Konfigurasi server ini sudah tersimpan. Gunakan `/setup` atau `/welcome setup` untuk memperbarui, `/rules publish` untuk aturan, `/roles setup` untuk panel role, lalu cek `/automod status`.'
+        ? 'Konfigurasi server ini sudah tersimpan. Gunakan `/setup` atau `/welcome setup` untuk memperbarui, `/rules publish` untuk aturan, `/roles setup` untuk panel role, `/changelog add` untuk info update GitHub, lalu cek `/automod status`.'
         : 'Server ini belum dikonfigurasi. Administrator atau pengguna dengan izin Manage Server perlu menjalankan `/setup` terlebih dahulu.' });
       if (interaction.commandName === 'setup') return await handleSetup(interaction, settings);
       if (interaction.commandName === 'welcome') return await handleWelcome(interaction, settings);
@@ -90,6 +92,7 @@ export function createCommandHandler({ settings, db, tickets, reports, rolePanel
       if (interaction.commandName === 'verify') return await handleVerifySetup(interaction, settings);
       if (interaction.commandName === 'roles') return await handleRolePickerSetup(interaction, settings, panels);
       if (interaction.commandName === 'ticket') return await handleTicketSetup(interaction, settings);
+      if (interaction.commandName === 'changelog') return await handleChangelog(interaction, githubChangelog);
       if (interaction.commandName === 'automod') return await handleAutomod(interaction, settings);
       if (interaction.commandName === 'warnings' || interaction.commandName === 'clearwarnings') {
         requirePermission(interaction, PermissionFlagsBits.ModerateMembers);
@@ -610,4 +613,94 @@ async function handleManualModeration(interaction, db) {
   const minutes = interaction.options.getInteger('menit', true); await member.timeout(minutes * 60_000, reason);
   insertManualAction(db, interaction.guildId, user.id, interaction.user.id, 'timeout', 'berhasil', reason);
   return interaction.reply({ ephemeral: true, content: `${user.tag} diberi timeout ${minutes} menit.` });
+}
+
+async function handleChangelog(interaction, changelog) {
+  requirePermission(interaction, PermissionFlagsBits.ManageGuild);
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'add') {
+    const channel = textChannel(interaction.options.getChannel('channel', true), 'Channel pengumuman');
+    await requireBotChannelPermissions(interaction, channel, 'channel pengumuman');
+    const color = parseHexColor(interaction.options.getString('warna'));
+    const mentionRole = interaction.options.getRole('mention-role');
+    if (mentionRole && mentionRole.id === interaction.guildId) {
+      throw new Error('Pilih role khusus (bukan @everyone) untuk opsi mention-role.');
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const tracker = await changelog.addTracker({
+      guildId: interaction.guildId,
+      channelId: channel.id,
+      rawRepo: interaction.options.getString('repo', true),
+      branch: interaction.options.getString('branch'),
+      title: interaction.options.getString('judul')?.trim() || null,
+      mentionRoleId: mentionRole?.id ?? null,
+      color,
+      includeLinks: interaction.options.getBoolean('tampilkan-link') ?? false,
+      ignoreMerge: interaction.options.getBoolean('abaikan-merge') ?? true
+    });
+    return interaction.editReply({
+      content: `Pelacak GitHub aktif: \`${tracker.repo}@${tracker.branch}\` → <#${tracker.channel_id}> (commit acuan: \`${tracker.last_commit_sha.slice(0, 7)}\`).`
+    });
+  }
+  if (sub === 'list') {
+    const trackers = changelog.listTrackers(interaction.guildId);
+    if (!trackers.length) {
+      return interaction.reply({ ephemeral: true, content: 'Belum ada repository GitHub yang dipantau di server ini. Gunakan `/changelog add` untuk menambahkan.' });
+    }
+    const lines = trackers.map((t) => {
+      const status = t.enabled ? 'Aktif' : 'Dijeda';
+      const checked = t.last_checked_at ? ` • cek <t:${Math.floor(t.last_checked_at / 1000)}:R>` : '';
+      const err = t.last_error ? ` • error: ${t.last_error}` : '';
+      return `• **${t.repo}@${t.branch}** → <#${t.channel_id}> (${status}, commit \`${t.last_commit_sha?.slice(0, 7) || '-'}\`${checked}${err})`;
+    });
+    return interaction.reply({ ephemeral: true, content: lines.join('\n').slice(0, 1950) });
+  }
+  if (sub === 'check') {
+    const rawRepo = interaction.options.getString('repo');
+    const branch = interaction.options.getString('branch');
+    const targets = rawRepo
+      ? [changelog.findTracker(interaction.guildId, rawRepo, branch)].filter(Boolean)
+      : changelog.listTrackers(interaction.guildId).filter((t) => t.enabled);
+    if (!targets.length) {
+      throw new Error(rawRepo ? 'Pelacak repository tersebut tidak ditemukan di server ini.' : 'Tidak ada pelacak GitHub aktif di server ini.');
+    }
+    await interaction.deferReply({ ephemeral: true });
+    let posted = 0;
+    const errors = [];
+    for (const tracker of targets) {
+      try {
+        const result = await changelog.checkTracker(interaction.client, tracker);
+        posted += result.posted;
+      } catch (error) {
+        errors.push(`${tracker.repo}@${tracker.branch}: ${error.message}`);
+      }
+    }
+    const summary = posted
+      ? `${posted} pembaruan commit baru berhasil dikirim ke channel pengumuman.`
+      : 'Tidak ada commit baru sejak pemeriksaan terakhir.';
+    const errorDetail = errors.length ? `\nKendala:\n${errors.map((e) => `• ${e}`).join('\n')}` : '';
+    return interaction.editReply({ content: `${summary}${errorDetail}`.slice(0, 1950) });
+  }
+  if (sub === 'test') {
+    const tracker = changelog.findTracker(interaction.guildId, interaction.options.getString('repo', true), interaction.options.getString('branch'));
+    if (!tracker) throw new Error('Pelacak repository tersebut tidak ditemukan di server ini.');
+    await interaction.deferReply({ ephemeral: true });
+    await changelog.previewLatest(interaction.client, tracker);
+    return interaction.editReply({ content: `Pratinjau patch notes untuk \`${tracker.repo}@${tracker.branch}\` dikirim ke <#${tracker.channel_id}>.` });
+  }
+  if (sub === 'toggle') {
+    const tracker = changelog.setEnabled(
+      interaction.guildId,
+      interaction.options.getString('repo', true),
+      interaction.options.getString('branch'),
+      interaction.options.getBoolean('aktif', true)
+    );
+    return interaction.reply({ ephemeral: true, content: `Pelacak \`${tracker.repo}@${tracker.branch}\` ${tracker.enabled ? 'diaktifkan' : 'dijeda'}.` });
+  }
+  const tracker = changelog.removeTracker(
+    interaction.guildId,
+    interaction.options.getString('repo', true),
+    interaction.options.getString('branch')
+  );
+  return interaction.reply({ ephemeral: true, content: `Pelacak \`${tracker.repo}@${tracker.branch}\` telah dihapus.` });
 }
